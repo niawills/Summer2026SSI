@@ -1,5 +1,4 @@
-# FCC Emergency Alert Chatbot & Knowledge Retrieval Platform
-
+# Eneralized Fine-Tuning Repo
 > Intelligent Q&A, retrieval-augmented generation (RAG), and fine‑tuning pipeline for public safety / emergency alert system content.
 
 ## 1. Overview
