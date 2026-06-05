@@ -35,14 +35,14 @@ EMBED_MODEL = "text-embedding-3-small"
 EMBED_DIMENSIONS = 1536
 SIMILARITY_TOP_K = 5
 MAX_RESPONSE_TOKENS = 500
-FALLBACK_TEXT = "No information available in the dataset or external sources for that question."
+FALLBACK_TEXT = "I'm sorry, I couldn't find any reviews matching that description in our database."
 #RELEVANCE_THRESHOLD = 0.35
 
 # API Keys
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SERPAPI_API_KEY = os.getenv("SERPAPI_KEY") or os.getenv("SERPAPI_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-PINECONE_INDEX = os.getenv("PINECONE_INDEX") or os.getenv("PINECONE_INDEX_NAME") or "fcc-chatbot-index"
+PINECONE_INDEX = os.getenv("PINECONE_INDEX") or os.getenv("PINECONE_INDEX_NAME") or "restaurant-bots"
 ID_STRATEGY = os.getenv("PINECONE_ID_STRATEGY", "url")  # 'url' (default) or 'content'
 
 # Override with Streamlit secrets if available
@@ -86,6 +86,24 @@ from ChromaChat2 import (
     is_relevant_to_emergency_systems,
     EMERGENCY_TOPICS
 )
+
+# ==========================================
+# Sidebar configuration & Restaurant Selector
+# ==========================================
+import streamlit as st
+
+st.sidebar.title("Configuration")
+
+# Dropdown menu to choose between your restaurant bots
+restaurant_choice = st.sidebar.selectbox(
+    "Choose Restaurant Bot:",
+    ["Crimson Coward (Burgers)", "Vocelli Pizza"]
+)
+
+# Set the namespace based on your selection so Pinecone searches the right reviews
+NAMESPACE = "crimson_coward" if "Burgers" in restaurant_choice else "vocelli_pizza"
+st.sidebar.info(f"Active Data Filter: {NAMESPACE}")
+
 
 # === Helper Functions ===
 
