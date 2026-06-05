@@ -240,9 +240,20 @@ st.set_page_config(
 
 def main():
     """Main Streamlit UI"""
-    st.title("🚨 Emergency Alert Systems Chat Assistant")
-    st.markdown("Ask questions about EAS, WEA, IPAWS, and emergency communications!")
+    st.title("🍗 Customer Review Insights Bot")
+    st.markdown("Ask questions about your restaurant review dataset. The bot retrieves relevant chunks and generates grounded insights.")
+
+    # ==========================================
+    # Restaurant Selector (Main Page Display)
+    # ==========================================
+    restaurant_choice = st.selectbox(
+        "Choose Restaurant Bot:",
+        ["Crimson Coward (Burgers)", "Vocelli Pizza"]
+    )
     
+    NAMESPACE = "crimson_coward" if "Burgers" in restaurant_choice else "vocelli_pizza"
+    st.info(f"Active Data Filter: {NAMESPACE}")
+  
     # Sidebar with stats
     with st.sidebar:
         st.header("📊 System Stats")
