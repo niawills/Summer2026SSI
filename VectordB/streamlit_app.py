@@ -88,21 +88,19 @@ from ChromaChat2 import (
 )
 
 # ==========================================
-# Sidebar configuration & Restaurant Selector
+# Restaurant Selector (Main Page Display)
 # ==========================================
 import streamlit as st
 
-st.sidebar.title("Configuration")
-
 # Dropdown menu to choose between your restaurant bots
-restaurant_choice = st.sidebar.selectbox(
+restaurant_choice = st.selectbox(
     "Choose Restaurant Bot:",
     ["Crimson Coward (Burgers)", "Vocelli Pizza"]
 )
 
 # Set the namespace based on your selection so Pinecone searches the right reviews
 NAMESPACE = "crimson_coward" if "Burgers" in restaurant_choice else "vocelli_pizza"
-st.sidebar.info(f"Active Data Filter: {NAMESPACE}")
+st.info(f"Active Data Filter: {NAMESPACE}")
 
 
 # === Helper Functions ===
