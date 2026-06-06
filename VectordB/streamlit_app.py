@@ -287,100 +287,82 @@ def main():
         # Process the query
         with st.chat_message("assistant"):
             with st.spinner("🔍 Searching for relevant information..."):
-                # Check relevance
+                # Retrieve relevant chunks from the selected restaurant namespace
                 try:
-                    is_relevant, similarity_score = is_relevant_to_emergency_systems(prompt)
-                except Exception as e:
-                    st.error(f"Error checking relevance: {e}")
-                    is_relevant = True  # Default to allowing
-                    similarity_score = 1.0
-                
-                if not is_relevant:
-                    response_text = (
-                        "🚫 I can only assist with questions related to emergency alert systems, "
-                        "public safety communications, disaster response, cybersecurity policy, "
-                        "and related regulatory topics. Please ask a question within my area of expertise."
-                    )
-                    st.warning(response_text)
-                    st.session_state.messages.append({"role": "assistant", "content": response_text})
-                else:
-                    # Retrieve relevant chunks from the selected restaurant namespace
+                    embedded_chunks = retrieve_relevant_chunks(prompt, namespace=namespace)
+                    external_docs = external_search(prompt)
+                    
+                    # Fetch full text for external docs
+                    for d in external_docs:
+                        full = fetch_full_text(d["url"])
+                        if full:
+                            d["content"] = full
+                    
+                    # Save external docs to Pinecone (in the same namespace)
                     try:
-                        embedded_chunks = retrieve_relevant_chunks(prompt, namespace=namespace)
-                        external_docs = external_search(prompt)
-                        
-                        # Fetch full text for external docs
-                        for d in external_docs:
-                            full = fetch_full_text(d["url"])
-                            if full:
-                                d["content"] = full
-                        
-                        # Save external docs to Pinecone (in the same namespace)
-                        try:
-                            before_stats = pinecone_index.describe_index_stats(namespace=namespace)
-                            before_cnt = before_stats.get("total_vector_count") if isinstance(before_stats, dict) else getattr(before_stats, "total_vector_count", None)
-                            _ = save_external_docs_to_pinecone(external_docs, namespace=namespace)
-                            time.sleep(2)
-                            after_stats = pinecone_index.describe_index_stats(namespace=namespace)
-                            after_cnt = after_stats.get("total_vector_count") if isinstance(after_stats, dict) else getattr(after_stats, "total_vector_count", None)
-                            new_added = 0
-                            if before_cnt is not None and after_cnt is not None:
-                                new_added = max(after_cnt - before_cnt, 0)
-                            st.sidebar.success(f"✅ Added {new_added} new embeddings to {namespace}. Namespace total: {after_cnt:,}")
-                        except Exception as e:
-                            st.sidebar.warning(f"⚠️ Could not save external docs: {e}")
-                        
-                        if not embedded_chunks and not external_docs:
-                            response_text = FALLBACK_TEXT
-                            st.info(response_text)
-                            st.session_state.messages.append({"role": "assistant", "content": response_text})
-                        else:
-                            # Build prompt and get response
-                            prompt_text = build_prompt(prompt, embedded_chunks, external_docs)
-                            
-                            response = None
-                            for attempt in range(3):
-                                try:
-                                    response = openai_client.chat.completions.create(
-                                        model="gpt-4o-mini",
-                                        messages=[{"role": "system", "content": prompt_text}],
-                                        max_tokens=MAX_RESPONSE_TOKENS,
-                                        temperature=0.3,
-                                    )
-                                    break
-                                except Exception as e:
-                                    if attempt < 2:
-                                        time.sleep(1)
-                                    else:
-                                        st.error(f"API error: {e}")
-                            
-                            if response:
-                                full_answer = response.choices[0].message.content.strip()
-                                ans_text, sources = parse_sources(full_answer)
-                                
-                                # Display answer
-                                st.markdown(ans_text)
-                                
-                                # Display sources
-                                if sources:
-                                    st.markdown("\n📚 **Sources:**")
-                                    for title, url in sources:
-                                        st.markdown(f"- [{title}]({url})")
-                                else:
-                                    st.markdown("\n📚 **Sources:** None cited.")
-                                
-                                # Add to chat history
-                                st.session_state.messages.append({
-                                    "role": "assistant",
-                                    "content": full_answer
-                                })
-                            else:
-                                st.error("Sorry, I couldn't get a response. Please try again.")
-                                
+                        before_stats = pinecone_index.describe_index_stats(namespace=namespace)
+                        before_cnt = before_stats.get("total_vector_count") if isinstance(before_stats, dict) else getattr(before_stats, "total_vector_count", None)
+                        _ = save_external_docs_to_pinecone(external_docs, namespace=namespace)
+                        time.sleep(2)
+                        after_stats = pinecone_index.describe_index_stats(namespace=namespace)
+                        after_cnt = after_stats.get("total_vector_count") if isinstance(after_stats, dict) else getattr(after_stats, "total_vector_count", None)
+                        new_added = 0
+                        if before_cnt is not None and after_cnt is not None:
+                            new_added = max(after_cnt - before_cnt, 0)
+                        st.sidebar.success(f"✅ Added {new_added} new embeddings to {namespace}. Namespace total: {after_cnt:,}")
                     except Exception as e:
-                        st.error(f"Error processing query: {e}")
-                        import traceback
-                        st.code(traceback.format_exc())
+                        st.sidebar.warning(f"⚠️ Could not save external docs: {e}")
+                    
+                    if not embedded_chunks and not external_docs:
+                        response_text = FALLBACK_TEXT
+                        st.info(response_text)
+                        st.session_state.messages.append({"role": "assistant", "content": response_text})
+                    else:
+                        # Build prompt and get response
+                        prompt_text = build_prompt(prompt, embedded_chunks, external_docs)
+                        response = None
+                        for attempt in range(3):
+                            try:
+                                response = openai_client.chat.completions.create(
+                                    model="gpt-4o-mini",
+                                    messages=[{"role": "system", "content": prompt_text}],
+                                    max_tokens=MAX_RESPONSE_TOKENS,
+                                    temperature=0.3,
+                                )
+                                break
+                            except Exception as e:
+                                if attempt < 2:
+                                    time.sleep(1)
+                                else:
+                                    st.error(f"API error: {e}")
+                        
+                        if response:
+                            full_answer = response.choices[0].message.content.strip()
+                            ans_text, sources = parse_sources(full_answer)
+                            
+                            # Display answer
+                            st.markdown(ans_text)
+                            
+                            # Display sources
+                            if sources:
+                                st.markdown("\n📚 **Sources:**")
+                                for title, url in sources:
+                                    st.markdown(f"- [{title}]({url})")
+                            else:
+                                st.markdown("\n📚 **Sources:** None cited.")
+                            
+                            # Add to chat history
+                            st.session_state.messages.append({
+                                "role": "assistant",
+                                "content": full_answer
+                            })
+                        else:
+                            st.error("Sorry, I couldn't get a response. Please try again.")
+                        
+                except Exception as e:
+                    st.error(f"Error processing query: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
 
 if __name__ == "__main__":
     main()
