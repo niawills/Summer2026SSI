@@ -75,14 +75,14 @@ def retrieve(
     top_k: int = 8,
     exclude_owner_responses: bool = True,
     index_name: Optional[str] = None,
+    namespace: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     openai_key = _env("OPENAI_API_KEY")
     pinecone_key = _env("PINECONE_API_KEY")
-    # Use explicit index_name when provided (allows per-restaurant indices),
-    # otherwise fall back to env var PINECONE_INDEX.
-    index_name = index_name or os.getenv("PINECONE_INDEX")
+    # Always use the configured main Pinecone index.
+    index_name = os.getenv("PINECONE_INDEX") or index_name
     if not index_name:
-        raise RuntimeError("Missing Pinecone index name. Set PINECONE_INDEX or pass index_name.")
+        raise RuntimeError("Missing Pinecone index name. Set PINECONE_INDEX.")
     embed_model = os.getenv("OPENAI_EMBED_MODEL", EMBED_MODEL_DEFAULT)
 
     client = OpenAI(api_key=openai_key)
@@ -99,6 +99,7 @@ def retrieve(
         include_metadata=True,
         include_values=False,
         filter=filt,
+        namespace=namespace,
     )
 
     matches = getattr(res, "matches", None) or (res.get("matches", []) if isinstance(res, dict) else []) or []
@@ -308,6 +309,7 @@ def generate_grounded_response(
     min_recurring_reviews: int = 2,
     include_debug: bool = False,
     index_name: Optional[str] = None,
+    namespace: Optional[str] = None,
 ) -> Dict[str, Any]:
     openai_key = _env("OPENAI_API_KEY")
     model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
@@ -315,7 +317,13 @@ def generate_grounded_response(
 
     workflow = wants_workflow_output(query)
 
-    contexts = retrieve(query, top_k=top_k, exclude_owner_responses=True, index_name=index_name)
+    contexts = retrieve(
+        query,
+        top_k=top_k,
+        exclude_owner_responses=True,
+        index_name=index_name,
+        namespace=namespace,
+    )
     agg = aggregate_contexts(contexts, min_recurring_reviews=min_recurring_reviews)
     messages = build_prompt(query, contexts, agg, workflow=workflow)
 

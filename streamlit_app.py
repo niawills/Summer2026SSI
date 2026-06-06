@@ -133,12 +133,12 @@ with st.sidebar:
         key="selected_restaurant",
     )
 
-    selected_index_name = restaurant_map.get(selected_rest)
-    ok, msg = validate_index_name(selected_index_name)
+    selected_namespace = restaurant_map.get(selected_rest)
+    ok, msg = validate_index_name(selected_namespace)
     if ok:
-        st.success(f"Using Pinecone index: {selected_index_name}")
+        st.success(f"Using Pinecone namespace: {selected_namespace}")
     else:
-        st.warning(f"Selected restaurant has no configured Pinecone index: {msg}")
+        st.warning(f"Selected restaurant has no configured Pinecone namespace: {msg}")
 
     st.markdown("---")
     st.header("💬 Conversations")
@@ -176,9 +176,10 @@ with st.sidebar:
 # =========================
 # Main — Chat UI
 # =========================
+main_pinecone_index = os.getenv("PINECONE_INDEX", "restaurant-bots")
 st.title("🍗 Customer Review Insights Bot")
 st.caption("Ask questions about Crimson Coward or Vocelli Pizza reviews. The bot retrieves grounded insights from your restaurant dataset.")
-st.info(f"Selected restaurant: **{selected_rest}** | Pinecone index: `{selected_index_name}`")
+st.info(f"Selected restaurant: **{selected_rest}** | Pinecone index: `{main_pinecone_index}` | Namespace: `{selected_namespace}`")
 
 cid = st.session_state.active_chat_id
 convo = st.session_state.conversations[cid]
@@ -225,7 +226,7 @@ if prompt:
                     top_k=int(st.session_state.settings["top_k"]),
                     min_recurring_reviews=int(st.session_state.settings["min_recurring_reviews"]),
                     include_debug=bool(st.session_state.settings["debug_on"]),
-                    index_name=selected_index_name,
+                    namespace=selected_namespace,
                 )
 
             if not isinstance(out, dict):
