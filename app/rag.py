@@ -312,7 +312,7 @@ def generate_grounded_response(
     namespace: Optional[str] = None,
 ) -> Dict[str, Any]:
     openai_key = _env("OPENAI_API_KEY")
-    model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     client = OpenAI(api_key=openai_key)
 
     workflow = wants_workflow_output(query)

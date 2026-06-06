@@ -1,368 +1,125 @@
 """
-Streamlit UI for Emergency Alert Systems Chat Assistant
+Streamlit UI for Restaurant Review Insights Bot
 
 Usage:
   streamlit run VectordB/streamlit_app.py
 """
+
+import os
 import pathlib
 import sys
+import streamlit as st
+from dotenv import load_dotenv
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import os
-import time
-import streamlit as st
-from openai import OpenAI
-from dotenv import load_dotenv
-try:
-    from pinecone import Pinecone
-except Exception:
-    Pinecone = None
-from typing import List, Dict
-
-try:
-    from serpapi import GoogleSearch
-except ImportError:
-    from serpapi.google_search import GoogleSearch
-
-# Load environment variables
-load_dotenv()
-
-# === Configuration ===
-EMBED_MODEL = "text-embedding-3-small"
-EMBED_DIMENSIONS = 1536
-SIMILARITY_TOP_K = 5
-MAX_RESPONSE_TOKENS = 500
-FALLBACK_TEXT = "I'm sorry, I couldn't find any reviews matching that description in our database."
-#RELEVANCE_THRESHOLD = 0.35
-
-# API Keys
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-SERPAPI_API_KEY = os.getenv("SERPAPI_KEY") or os.getenv("SERPAPI_API_KEY")
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-PINECONE_INDEX = os.getenv("PINECONE_INDEX") or os.getenv("PINECONE_INDEX_NAME") or "restaurant-bots"
-ID_STRATEGY = os.getenv("PINECONE_ID_STRATEGY", "url")  # 'url' (default) or 'content'
-
-# Override with Streamlit secrets if available
-try:
-    if hasattr(st, 'secrets') and st.secrets:
-        OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", OPENAI_API_KEY)
-        SERPAPI_API_KEY = st.secrets.get("SERPAPI_KEY", st.secrets.get("SERPAPI_API_KEY", SERPAPI_API_KEY))
-        PINECONE_API_KEY = st.secrets.get("PINECONE_API_KEY", PINECONE_API_KEY)
-        PINECONE_INDEX = st.secrets.get("PINECONE_INDEX", st.secrets.get("PINECONE_INDEX_NAME", PINECONE_INDEX))
-except:
-    pass
-
-# Initialize clients
-openai_client = OpenAI(api_key=OPENAI_API_KEY)
-
-# Pinecone client (required)
-pc = None
-pinecone_index = None
-if not PINECONE_API_KEY:
-    st.error("❌ PINECONE_API_KEY not set. Please configure your Pinecone API key.")
-    st.stop()
-if Pinecone is None:
-    st.error("❌ Pinecone library not installed. Run: pip install pinecone-client")
-    st.stop()
-
-try:
-    pc = Pinecone(api_key=PINECONE_API_KEY)
-    pinecone_index = pc.Index(PINECONE_INDEX)
-except Exception as e:
-    st.error(f"❌ Failed to initialize Pinecone: {e}")
-    st.stop()
-
-# Import helper functions from ChromaChat2
-sys.path.insert(0, str(ROOT / "VectordB"))
-from ChromaChat2 import (
-    embed_text,
-    external_search,
-    fetch_full_text,
+from VectordB.ChromaChat2 import (
     build_prompt,
     parse_sources,
-    is_relevant_to_emergency_systems,
-    EMERGENCY_TOPICS
+    retrieve_relevant_chunks,
+    openai_client,
+    pinecone_index,
 )
 
+load_dotenv()
 
-# === Helper Functions ===
+PINECONE_INDEX = os.getenv("PINECONE_INDEX", "restaurant-bots")
+MAX_RESPONSE_TOKENS = 500
+FALLBACK_TEXT = "No relevant restaurant reviews were found for that question."
 
-MIN_ARTICLE_LENGTH = 200
-CHUNK_SIZE = 2000
-CHUNK_OVERLAP = 200
+RESTAURANT_MAP = {
+    "Crimson Coward (Burgers)": "crimson_coward",
+    "Vocelli Pizza": "vocelli_pizza",
+}
 
-def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> List[str]:
-    if len(text) <= chunk_size:
-        return [text]
-    chunks: List[str] = []
-    start = 0
-    while start < len(text):
-        end = min(start + chunk_size, len(text))
-        chunks.append(text[start:end])
-        if end == len(text):
-            break
-        start = end - overlap
-    return chunks
-
-def embed_texts(texts: List[str]) -> List[List[float]]:
-    if not texts:
-        return []
-    resp = openai_client.embeddings.create(
-        model=EMBED_MODEL,
-        input=texts,
-        dimensions=EMBED_DIMENSIONS,
-    )
-    return [r.embedding for r in resp.data]
-
-def generate_doc_id(url: str, chunk_index: int, chunk_text: str | None = None) -> str:
-    """Generate an ID for a document chunk.
-    Strategies:
-      - url (default): stable per URL and chunk index -> overwrites on repeat runs
-      - content: based on the chunk content -> treats new content as a new vector
-    """
-    import hashlib as _hashlib
-    try:
-        if ID_STRATEGY.lower() == "content" and chunk_text:
-            ch = _hashlib.md5(chunk_text.encode()).hexdigest()[:12]
-            return f"webc_{ch}"
-        # Fallback/default: URL-based stable IDs
-        url_hash = _hashlib.md5(url.encode()).hexdigest()[:8]
-        return f"web_{url_hash}_chunk_{chunk_index:03d}"
-    except Exception:
-        base = (url or "") + "|" + str(chunk_index) + "|" + (chunk_text or "")
-        h = _hashlib.md5(base.encode()).hexdigest()[:12]
-        return f"web_{h}"
-
-def save_external_docs_to_pinecone(external_docs: List[Dict], namespace: str = None) -> int:
-    """Save external docs to Pinecone as chunks with embeddings in the specified namespace.
-    Returns the count of vectors that were actually upserted (new or updated) according to Pinecone response.
-    """
-    vectors_to_upsert = []
-
-    import datetime as _dt
-    today = str(_dt.date.today())
-
-    for d in external_docs:
-        url = d.get("url", "")
-        title = d.get("title", "External Source")
-        content = d.get("content", "")
-
-        if not url:
-            continue
-
-        if not content or len(content.strip()) < MIN_ARTICLE_LENGTH:
-            combined = (title + "\n\n" + (content or "")).strip()
-            if len(combined) >= MIN_ARTICLE_LENGTH:
-                content = combined
-            else:
-                # Hint in sidebar for transparency
-                st.sidebar.info(f"Skipping short/empty: {url}")
-                continue
-
-        chunks = chunk_text(content)
-        embeddings = embed_texts(chunks)
-
-        for idx, (chunk, emb) in enumerate(zip(chunks, embeddings)):
-            doc_id = generate_doc_id(url, idx, chunk)
-            vectors_to_upsert.append({
-                'id': doc_id,
-                'values': emb,
-                'metadata': {
-                    'text': chunk[:1000],
-                    'source': url,
-                    'title': title,
-                    'retrieved': today,
-                    'chunk_index': idx,
-                }
-            })
-
-    if not vectors_to_upsert:
-        return 0
-
-    # Upsert in batches to the specified namespace
-    upserted_total = 0
-    batch_size = 100
-    try:
-        for i in range(0, len(vectors_to_upsert), batch_size):
-            batch = vectors_to_upsert[i:i + batch_size]
-            resp = pinecone_index.upsert(vectors=batch, namespace=namespace)
-            if isinstance(resp, dict):
-                upserted_total += int(resp.get('upserted_count', 0))
-            else:
-                upserted_total += int(getattr(resp, 'upserted_count', 0))
-    except Exception as e:
-        st.sidebar.warning(f"⚠️ Failed saving to Pinecone: {e}")
-        return 0
-
-    return upserted_total
-
-def retrieve_relevant_chunks(query: str, namespace: str = None, top_k: int = SIMILARITY_TOP_K) -> List[Dict]:
-    """Retrieve relevant chunks from Pinecone using the specified namespace."""
-    q_emb = embed_text(query)
-    # Query Pinecone with explicit namespace parameter
-    results = pinecone_index.query(
-        vector=q_emb,
-        top_k=top_k,
-        include_metadata=True,
-        namespace=namespace
-    )
-    matches = results.get("matches", []) if isinstance(results, dict) else results.matches
-    chunks = []
-    for m in matches:
-        md = m.get("metadata", {}) if isinstance(m, dict) else getattr(m, "metadata", {})
-        text = md.get("text") or md.get("chunk") or md.get("document") or ""
-        meta = {
-            "title": md.get("title", "Pinecone Document"),
-            "source": md.get("source") or md.get("url") or "",
-        }
-        if text:
-            chunks.append({"document": text, "metadata": meta})
-    return chunks
-
-# === Streamlit Configuration ===
 st.set_page_config(
-    page_title="Emergency Alert Systems Chat",
-    page_icon="🚨",
-    layout="wide"
+    page_title="🍗 Customer Review Insights Bot",
+    page_icon="🍗",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-def main():
-    """Main Streamlit UI"""
-    st.title("🍗 Customer Review Insights Bot")
-    st.markdown("Ask questions about your restaurant review dataset. The bot retrieves relevant chunks and generates grounded insights.")
+st.title("🍗 Customer Review Insights Bot")
+st.write("Ask questions about restaurant reviews for Crimson Coward or Vocelli Pizza.")
 
-    # ==========================================
-    # Restaurant Selector (Main Page Display)
-    # ==========================================
-    restaurant_choice = st.selectbox(
-        "Choose Restaurant Bot:",
-        ["Crimson Coward (Burgers)", "Vocelli Pizza"],
-        key="restaurant_selector"
-    )
-    
-    # Dynamically set namespace based on selection
-    namespace = "crimson_coward" if "Burgers" in restaurant_choice else "vocelli_pizza"
-    st.info(f"📍 Active Restaurant: {restaurant_choice} | Querying namespace: `{namespace}`")
-  
-    # Sidebar with stats
-    with st.sidebar:
-        st.header("📊 System Stats")
-        st.success(f"Using Pinecone index: {PINECONE_INDEX}")
-        try:
-            stats = pinecone_index.describe_index_stats()
-            total_vecs = stats.get("total_vector_count") if isinstance(stats, dict) else getattr(stats, "total_vector_count", None)
-            if total_vecs is not None:
-                st.info(f"Vectors: {total_vecs:,}")
-        except Exception as e:
-            st.warning(f"⚠️ Could not retrieve stats: {e}")
-        
-        st.markdown("---")
-        st.markdown("### 💡 Tips")
-        st.markdown("""
-        - Ask about EAS, WEA, IPAWS
-        - Request specific regulations
-        - Inquire about emergency procedures
-        - Ask for FCC policy details
-        """)
-    
-    # Initialize chat history
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    
-    # Display chat history
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-    
-    # Chat input
-    if prompt := st.chat_input("Ask about emergency alert systems..."):
-        # Add user message to chat history
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        
-        # Process the query
-        with st.chat_message("assistant"):
-            with st.spinner("🔍 Searching for relevant information..."):
-                # Retrieve relevant chunks from the selected restaurant namespace
-                try:
-                    embedded_chunks = retrieve_relevant_chunks(prompt, namespace=namespace)
-                    external_docs = external_search(prompt)
-                    
-                    # Fetch full text for external docs
-                    for d in external_docs:
-                        full = fetch_full_text(d["url"])
-                        if full:
-                            d["content"] = full
-                    
-                    # Save external docs to Pinecone (in the same namespace)
+selected_restaurant = st.sidebar.selectbox(
+    "Choose a restaurant",
+    options=list(RESTAURANT_MAP.keys()),
+    index=0,
+)
+selected_namespace = RESTAURANT_MAP[selected_restaurant]
+
+st.sidebar.success(f"Using Pinecone index: {PINECONE_INDEX}")
+st.sidebar.success(f"Active namespace: {selected_namespace}")
+
+with st.sidebar.expander("Index stats", expanded=False):
+    try:
+        stats = pinecone_index.describe_index_stats(namespace=selected_namespace)
+        total = stats.get("namespaces", {}).get(selected_namespace, {}).get("vector_count") if isinstance(stats, dict) else None
+        if total is None:
+            total = getattr(stats, "total_vector_count", None)
+        if total is not None:
+            st.write(f"Total vectors in namespace: {total:,}")
+        else:
+            st.write("Index stats unavailable.")
+    except Exception as e:
+        st.write(f"Could not load index stats: {e}")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("Use the restaurant selector above to choose the review namespace.")
+
+with st.sidebar.expander("Advanced settings", expanded=False):
+    top_k = st.slider("Retrieved chunks (top_k)", min_value=3, max_value=50, value=12, step=1)
+    show_debug = st.checkbox("Show debug output", value=False)
+
+prompt = st.chat_input("Ask a restaurant review question...")
+
+if prompt:
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Retrieving review context and generating an answer..."):
+            embedded_chunks = retrieve_relevant_chunks(prompt, namespace=selected_namespace, top_k=top_k)
+
+            if not embedded_chunks:
+                st.info(FALLBACK_TEXT)
+            else:
+                prompt_text = build_prompt(prompt, embedded_chunks)
+
+                response = None
+                for attempt in range(3):
                     try:
-                        before_stats = pinecone_index.describe_index_stats(namespace=namespace)
-                        before_cnt = before_stats.get("total_vector_count") if isinstance(before_stats, dict) else getattr(before_stats, "total_vector_count", None)
-                        _ = save_external_docs_to_pinecone(external_docs, namespace=namespace)
-                        time.sleep(2)
-                        after_stats = pinecone_index.describe_index_stats(namespace=namespace)
-                        after_cnt = after_stats.get("total_vector_count") if isinstance(after_stats, dict) else getattr(after_stats, "total_vector_count", None)
-                        new_added = 0
-                        if before_cnt is not None and after_cnt is not None:
-                            new_added = max(after_cnt - before_cnt, 0)
-                        st.sidebar.success(f"✅ Added {new_added} new embeddings to {namespace}. Namespace total: {after_cnt:,}")
+                        response = openai_client.chat.completions.create(
+                            model="gpt-4o-mini",
+                            messages=[{"role": "system", "content": prompt_text}],
+                            max_tokens=MAX_RESPONSE_TOKENS,
+                            temperature=0.3,
+                        )
+                        break
                     except Exception as e:
-                        st.sidebar.warning(f"⚠️ Could not save external docs: {e}")
-                    
-                    if not embedded_chunks and not external_docs:
-                        response_text = FALLBACK_TEXT
-                        st.info(response_text)
-                        st.session_state.messages.append({"role": "assistant", "content": response_text})
-                    else:
-                        # Build prompt and get response
-                        prompt_text = build_prompt(prompt, embedded_chunks, external_docs)
-                        response = None
-                        for attempt in range(3):
-                            try:
-                                response = openai_client.chat.completions.create(
-                                    model="gpt-4o-mini",
-                                    messages=[{"role": "system", "content": prompt_text}],
-                                    max_tokens=MAX_RESPONSE_TOKENS,
-                                    temperature=0.3,
-                                )
-                                break
-                            except Exception as e:
-                                if attempt < 2:
-                                    time.sleep(1)
-                                else:
-                                    st.error(f"API error: {e}")
-                        
-                        if response:
-                            full_answer = response.choices[0].message.content.strip()
-                            ans_text, sources = parse_sources(full_answer)
-                            
-                            # Display answer
-                            st.markdown(ans_text)
-                            
-                            # Display sources
-                            if sources:
-                                st.markdown("\n📚 **Sources:**")
-                                for title, url in sources:
-                                    st.markdown(f"- [{title}]({url})")
-                            else:
-                                st.markdown("\n📚 **Sources:** None cited.")
-                            
-                            # Add to chat history
-                            st.session_state.messages.append({
-                                "role": "assistant",
-                                "content": full_answer
-                            })
+                        if attempt >= 2:
+                            st.error(f"OpenAI error: {e}")
                         else:
-                            st.error("Sorry, I couldn't get a response. Please try again.")
-                        
-                except Exception as e:
-                    st.error(f"Error processing query: {e}")
-                    import traceback
-                    st.code(traceback.format_exc())
+                            continue
 
-if __name__ == "__main__":
-    main()
+                if not response:
+                    st.error("Sorry, I couldn't get a response. Please try again.")
+                else:
+                    full_answer = response.choices[0].message.content.strip()
+                    ans_text, sources = parse_sources(full_answer)
+                    st.markdown(ans_text)
+                    if sources:
+                        st.markdown("\n📚 **Sources:**")
+                        for title, url in sources:
+                            st.markdown(f"- [{title}]({url})")
+                    else:
+                        st.markdown("\n📚 **Sources:** None cited.")
+
+                    if show_debug:
+                        st.expander("Debug", expanded=False).write({
+                            "prompt_text": prompt_text,
+                            "embedded_chunks": embedded_chunks[:top_k],
+                        })
