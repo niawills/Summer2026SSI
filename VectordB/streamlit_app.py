@@ -87,21 +87,6 @@ from ChromaChat2 import (
     EMERGENCY_TOPICS
 )
 
-# ==========================================
-# Restaurant Selector (Main Page Display)
-# ==========================================
-import streamlit as st
-
-# Dropdown menu to choose between your restaurant bots
-restaurant_choice = st.selectbox(
-    "Choose Restaurant Bot:",
-    ["Crimson Coward (Burgers)", "Vocelli Pizza"]
-)
-
-# Set the namespace based on your selection so Pinecone searches the right reviews
-NAMESPACE = "crimson_coward" if "Burgers" in restaurant_choice else "vocelli_pizza"
-st.info(f"Active Data Filter: {NAMESPACE}")
-
 
 # === Helper Functions ===
 
@@ -151,8 +136,8 @@ def generate_doc_id(url: str, chunk_index: int, chunk_text: str | None = None) -
         h = _hashlib.md5(base.encode()).hexdigest()[:12]
         return f"web_{h}"
 
-def save_external_docs_to_pinecone(external_docs: List[Dict]) -> int:
-    """Save external docs to Pinecone as chunks with embeddings.
+def save_external_docs_to_pinecone(external_docs: List[Dict], namespace: str = None) -> int:
+    """Save external docs to Pinecone as chunks with embeddings in the specified namespace.
     Returns the count of vectors that were actually upserted (new or updated) according to Pinecone response.
     """
     vectors_to_upsert = []
@@ -197,13 +182,13 @@ def save_external_docs_to_pinecone(external_docs: List[Dict]) -> int:
     if not vectors_to_upsert:
         return 0
 
-    # Upsert in batches
+    # Upsert in batches to the specified namespace
     upserted_total = 0
     batch_size = 100
     try:
         for i in range(0, len(vectors_to_upsert), batch_size):
             batch = vectors_to_upsert[i:i + batch_size]
-            resp = pinecone_index.upsert(vectors=batch)
+            resp = pinecone_index.upsert(vectors=batch, namespace=namespace)
             if isinstance(resp, dict):
                 upserted_total += int(resp.get('upserted_count', 0))
             else:
@@ -214,10 +199,16 @@ def save_external_docs_to_pinecone(external_docs: List[Dict]) -> int:
 
     return upserted_total
 
-def retrieve_relevant_chunks(query: str, top_k: int = SIMILARITY_TOP_K) -> List[Dict]:
-    """Retrieve relevant chunks from Pinecone."""
+def retrieve_relevant_chunks(query: str, namespace: str = None, top_k: int = SIMILARITY_TOP_K) -> List[Dict]:
+    """Retrieve relevant chunks from Pinecone using the specified namespace."""
     q_emb = embed_text(query)
-    results = pinecone_index.query(vector=q_emb, top_k=top_k, include_metadata=True)
+    # Query Pinecone with explicit namespace parameter
+    results = pinecone_index.query(
+        vector=q_emb,
+        top_k=top_k,
+        include_metadata=True,
+        namespace=namespace
+    )
     matches = results.get("matches", []) if isinstance(results, dict) else results.matches
     chunks = []
     for m in matches:
@@ -248,11 +239,13 @@ def main():
     # ==========================================
     restaurant_choice = st.selectbox(
         "Choose Restaurant Bot:",
-        ["Crimson Coward (Burgers)", "Vocelli Pizza"]
+        ["Crimson Coward (Burgers)", "Vocelli Pizza"],
+        key="restaurant_selector"
     )
     
-    NAMESPACE = "crimson_coward" if "Burgers" in restaurant_choice else "vocelli_pizza"
-    st.info(f"Active Data Filter: {NAMESPACE}")
+    # Dynamically set namespace based on selection
+    namespace = "crimson_coward" if "Burgers" in restaurant_choice else "vocelli_pizza"
+    st.info(f"📍 Active Restaurant: {restaurant_choice} | Querying namespace: `{namespace}`")
   
     # Sidebar with stats
     with st.sidebar:
@@ -311,9 +304,9 @@ def main():
                     st.warning(response_text)
                     st.session_state.messages.append({"role": "assistant", "content": response_text})
                 else:
-                    # Retrieve relevant chunks
+                    # Retrieve relevant chunks from the selected restaurant namespace
                     try:
-                        embedded_chunks = retrieve_relevant_chunks(prompt)
+                        embedded_chunks = retrieve_relevant_chunks(prompt, namespace=namespace)
                         external_docs = external_search(prompt)
                         
                         # Fetch full text for external docs
@@ -322,18 +315,18 @@ def main():
                             if full:
                                 d["content"] = full
                         
-                        # Save external docs to Pinecone
+                        # Save external docs to Pinecone (in the same namespace)
                         try:
-                            before_stats = pinecone_index.describe_index_stats()
+                            before_stats = pinecone_index.describe_index_stats(namespace=namespace)
                             before_cnt = before_stats.get("total_vector_count") if isinstance(before_stats, dict) else getattr(before_stats, "total_vector_count", None)
-                            _ = save_external_docs_to_pinecone(external_docs)
+                            _ = save_external_docs_to_pinecone(external_docs, namespace=namespace)
                             time.sleep(2)
-                            after_stats = pinecone_index.describe_index_stats()
+                            after_stats = pinecone_index.describe_index_stats(namespace=namespace)
                             after_cnt = after_stats.get("total_vector_count") if isinstance(after_stats, dict) else getattr(after_stats, "total_vector_count", None)
                             new_added = 0
                             if before_cnt is not None and after_cnt is not None:
                                 new_added = max(after_cnt - before_cnt, 0)
-                            st.sidebar.success(f"✅ Added {new_added} new embeddings. Pinecone total: {after_cnt:,}")
+                            st.sidebar.success(f"✅ Added {new_added} new embeddings to {namespace}. Namespace total: {after_cnt:,}")
                         except Exception as e:
                             st.sidebar.warning(f"⚠️ Could not save external docs: {e}")
                         
