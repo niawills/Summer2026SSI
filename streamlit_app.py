@@ -15,6 +15,8 @@ import time
 import uuid
 import streamlit as st
 from app.rag import generate_grounded_response
+import os
+
 
 st.set_page_config(
     page_title="🍗 Customer Review Insights Bot",
@@ -98,6 +100,32 @@ _ensure_active_chat()
 # Sidebar — Conversation dashboard
 # =========================
 with st.sidebar:
+    # Restaurant selector: load mapping via helper (env or restaurants.json)
+    from app.restaurants import load_restaurant_map, validate_index_name
+
+    rest_map = load_restaurant_map()
+
+    options = list(rest_map.keys()) + ["Custom index"]
+    if "selected_restaurant" not in st.session_state:
+        st.session_state.selected_restaurant = options[0]
+    selected_rest = st.selectbox("Choose restaurant", options=options, index=options.index(st.session_state.selected_restaurant) if st.session_state.selected_restaurant in options else 0)
+    st.session_state.selected_restaurant = selected_rest
+    selected_index_name = None
+    if selected_rest == "Custom index":
+        if "custom_index_name" not in st.session_state:
+            st.session_state.custom_index_name = ""
+        st.session_state.custom_index_name = st.text_input("Pinecone index name for custom restaurant", value=st.session_state.custom_index_name)
+        selected_index_name = st.session_state.custom_index_name.strip() or None
+    else:
+        selected_index_name = rest_map.get(selected_rest)
+
+    # Validate selection and show clear warning/error UI when missing.
+    ok, msg = validate_index_name(selected_index_name)
+    if not ok:
+        st.warning(f"Selected restaurant has no configured Pinecone index: {msg}")
+    else:
+        st.info(f"Selected Pinecone index: {selected_index_name}")
+
     st.header("💬 Conversations")
 
     # New chat button
@@ -279,7 +307,8 @@ if prompt:
                 query=prompt,
                 top_k=int(st.session_state.settings["top_k"]),
                 min_recurring_reviews=int(st.session_state.settings["min_recurring_reviews"]),
-                include_debug=bool(st.session_state.settings["debug_on"]),
+                    include_debug=bool(st.session_state.settings["debug_on"]),
+                    index_name=selected_index_name,
             )
 
         if not isinstance(out, dict):

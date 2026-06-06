@@ -16,11 +16,17 @@ Features:
 import pathlib
 import sys
 
+# Load environment variables FIRST before any other imports
+from dotenv import load_dotenv
+env_path = pathlib.Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(dotenv_path=env_path)
 
 import os
 import time
 import datetime
+import json
 from typing import List, Dict, Tuple
+
 
 try:
     import streamlit as st
@@ -42,13 +48,10 @@ import hashlib
 # === Configuration ===
 
 # Access API keys from Streamlit secrets or .env fallback
-# Always try .env first for local development
-from dotenv import load_dotenv
-load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SERPAPI_API_KEY = os.getenv("SERPAPI_KEY") or os.getenv("SERPAPI_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-PINECONE_INDEX = os.getenv("PINECONE_INDEX", "fcc-chatbot-index")
+PINECONE_INDEX = os.getenv("PINECONE_INDEX", "restaurant-bots")
 ID_STRATEGY = os.getenv("PINECONE_ID_STRATEGY", "url")  # 'url' (default) or 'content'
 
 # Override with Streamlit secrets if available (for cloud deployment)
@@ -183,6 +186,89 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVE
             break
         start = end - overlap
     return chunks
+
+DATA_FILES = [
+    (pathlib.Path(__file__).resolve().parent / "crimson_coward.json", "crimson_coward"),
+    (pathlib.Path(__file__).resolve().parent / "vocelli_pizza.json", "vocelli_pizza"),
+]
+
+
+def load_reviews_from_file(file_path: pathlib.Path) -> List[Dict]:
+    with file_path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, list):
+        raise ValueError(f"Expected a list of review objects in {file_path}")
+    return data
+
+
+def prepare_review_vectors(reviews: List[Dict], namespace: str) -> List[Dict]:
+    vectors: List[Dict] = []
+    texts: List[str] = []
+    metadata_list: List[Dict] = []
+
+    for idx, review in enumerate(reviews):
+        text = str(review.get("text", "")).strip()
+        if not text:
+            continue
+
+        metadata = {
+            "text": text,
+            "source": namespace,
+            "author": review.get("author", ""),
+            "rating": review.get("rating"),
+            "date": review.get("date", ""),
+            "sentiment": review.get("sentiment", ""),
+            "review_index": idx,
+        }
+        texts.append(text)
+        metadata_list.append(metadata)
+
+    if not texts:
+        return []
+
+    embeddings = embed_texts(texts)
+    for idx, (emb, meta) in enumerate(zip(embeddings, metadata_list)):
+        vector_id = f"{namespace}_{idx:08d}"
+        vectors.append({
+            "id": vector_id,
+            "values": emb,
+            "metadata": meta,
+        })
+
+    return vectors
+
+
+def upsert_vectors(vectors: List[Dict], namespace: str) -> int:
+    if not vectors:
+        return 0
+
+    batch_size = 100
+    upserted_total = 0
+    for i in range(0, len(vectors), batch_size):
+        batch = vectors[i:i + batch_size]
+        resp = pinecone_index.upsert(vectors=batch, namespace=namespace)
+        if isinstance(resp, dict):
+            upserted_total += int(resp.get("upserted_count", 0))
+        else:
+            upserted_total += int(getattr(resp, "upserted_count", 0))
+    return upserted_total
+
+
+def ingest_datasets() -> None:
+    print(f"🔁 Ingesting review datasets into Pinecone index '{PINECONE_INDEX}'")
+    for file_path, namespace in DATA_FILES:
+        if not file_path.exists():
+            print(f"⚠️ File not found: {file_path}")
+            continue
+
+        reviews = load_reviews_from_file(file_path)
+        print(f"⏳ Processing {len(reviews)} reviews from '{file_path.name}' into namespace '{namespace}'")
+        vectors = prepare_review_vectors(reviews, namespace)
+        upserted = upsert_vectors(vectors, namespace)
+        print(f"✅ Upserted {upserted} vectors into namespace '{namespace}'")
+
+    print("🎉 Ingestion complete.")
+
 
 def retrieve_relevant_chunks(query: str, top_k: int = SIMILARITY_TOP_K) -> List[Dict]:
     """Retrieve relevant chunks from Pinecone"""
@@ -525,4 +611,7 @@ def chat():
             break
 
 if __name__ == "__main__":
-    chat()
+    if len(sys.argv) > 1 and sys.argv[1].lower() == "chat":
+        chat()
+    else:
+        ingest_datasets()
