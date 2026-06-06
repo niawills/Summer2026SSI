@@ -211,7 +211,7 @@ def ingest_datasets() -> None:
     print("🎉 Ingestion complete.")
 
 
-def retrieve_relevant_chunks(query: str, namespace: str = None, top_k: int = SIMILARITY_TOP_K) -> List[Dict]:
+def retrieve_relevant_chunks(query: str, NAMESPACE: str = None, top_k: int = SIMILARITY_TOP_K) -> List[Dict]:
     """Retrieve relevant chunks from Pinecone using the specified namespace."""
     q_emb = embed_text(query)
     
@@ -220,7 +220,7 @@ def retrieve_relevant_chunks(query: str, namespace: str = None, top_k: int = SIM
             vector=q_emb,
             top_k=top_k,
             include_metadata=True,
-            namespace=namespace
+            namespace=NAMESPACE
         )
         
         chunks = []

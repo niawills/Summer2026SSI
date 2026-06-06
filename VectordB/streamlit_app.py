@@ -82,7 +82,7 @@ if prompt:
 
     with st.chat_message("assistant"):
         with st.spinner("Retrieving review context and generating an answer..."):
-            embedded_chunks = retrieve_relevant_chunks(prompt, namespace=selected_namespace, top_k=top_k)
+            embedded_chunks = retrieve_relevant_chunks(prompt, NAMESPACE=selected_namespace, top_k=top_k)
 
             if not embedded_chunks:
                 st.info(FALLBACK_TEXT)
